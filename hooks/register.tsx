@@ -23,6 +23,8 @@ const LOW_AT = 15
 const TIGHT_CELLS = 6
 /** How often the band redraws, so the countdown and the warm-to-cold flip stay current. */
 const TICK_MS = 30_000
+/** How often the keepwarm state is read, so a /keepwarm shows up within seconds. */
+const KEEPWARM_POLL_MS = 3_000
 
 const windows = atom({ plugin: 'ribbon', key: 'windows' } as const, [] as Window[])
 const cache = atom({ plugin: 'ribbon', key: 'cache' } as const, null as CacheFacts | null)
@@ -70,7 +72,7 @@ export const viewOf = (c: CacheFacts | null, now: number): CacheView | null => {
 }
 
 /** The keepwarm line, or null where the cache-tax mod is not installed (no `$.cacheTax`) or not answering. */
-const peekKeepwarm = async ($: EngineInterface): Promise<void> => {
+const peekKeepwarm = async ($: EngineInterface): Promise<boolean> => {
   let next: Keepwarm | null = null
   try {
     const s = await $.cacheTax.status()
@@ -78,7 +80,10 @@ const peekKeepwarm = async ($: EngineInterface): Promise<void> => {
   } catch {
     // an absent or failing provider just means no keepwarm line
   }
+  const before = await read($, keepwarm)
+  const changed = (before ? keepwarmText(before) : null) !== (next ? keepwarmText(next) : null)
   await update($, keepwarm, () => next)
+  return changed
 }
 
 /** The band's keepwarm text, e.g. `keepwarm 2h 10m left`. */
@@ -106,9 +111,10 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await pull($)
     await peekKeepwarm($)
-    $.clock.every(TICK_MS, async () => {
-      await peekKeepwarm($)
-      $.ui.invalidate('ui.render')
+    $.clock.every(TICK_MS, () => $.ui.invalidate('ui.render'))
+    // /keepwarm changes the state between ticks; the status call is in-process, so a short poll redraws only on a change.
+    $.clock.every(KEEPWARM_POLL_MS, async () => {
+      if (await peekKeepwarm($)) $.ui.invalidate('ui.render')
     })
     return next(e)
   })
