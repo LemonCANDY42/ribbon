@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { keepwarmText } from '../hooks/register'
+
 const WINDOWS = [
   { kind: 'five_hour', percentUsed: 58, resetsAt: '2099-01-01T00:00:00Z' },
   { kind: 'seven_day', percentUsed: 12.5 },
@@ -96,4 +98,27 @@ test('the band sets no background and no hex neutrals, so it takes the app theme
   expect(tree).not.toContain('backgroundColor')
   expect(tree).not.toContain('#24221c')
   await band.unmount()
+})
+
+const SESSION = async ($: any, on: any) => {
+  mock.store(on)
+  mock.clock(on, { now: Date.parse('2098-12-31T22:00:00Z') })
+  on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: WINDOWS } }))
+  on('classic.SessionStart', () => ({}))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 18 * 60, context_tokens: 770000, model: 'claude-opus-5-5' })
+}
+
+test('without the cache-tax mod the band has no keepwarm text', async ($, on) => {
+  await SESSION($, on)
+  const band = await $.ui.mount({ plugin: 'ribbon', surface: 'desktop', component: 'AbovePrompt', props: PROPS })
+  expect(await band.find({ key: 'kw' })).toBeUndefined()
+  await band.unmount()
+})
+
+test('the keepwarm text says off, stopped, or the time left', () => {
+  expect(keepwarmText({ state: 'off', leftMs: 0 })).toBe('keepwarm off')
+  expect(keepwarmText({ state: 'stopped', leftMs: 0 })).toBe('keepwarm stopped')
+  expect(keepwarmText({ state: 'on', leftMs: 130 * 60000 })).toBe('keepwarm 2h 10m left')
 })

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { CacheFacts, Fold, Window } from '../types'
+import type { CacheFacts, Fold, Keepwarm, Window } from '../types'
 import {
   HUE, INK, ORANGE, ROBO_SIZE, TTL_MIN, TTL_MS, WORD, YELLOW,
   bandPx, cardSvg, chipSvg, costOf, familyOf, fmtIdle, kindOf, mineModel, roboSvg, rowKindOf, usd,
@@ -27,6 +27,7 @@ const TICK_MS = 30_000
 const windows = atom({ plugin: 'ribbon', key: 'windows' } as const, [] as Window[])
 const cache = atom({ plugin: 'ribbon', key: 'cache' } as const, null as CacheFacts | null)
 const fold = atom({ plugin: 'ribbon', key: 'fold' } as const, null as Fold | null)
+const keepwarm = atom({ plugin: 'ribbon', key: 'keepwarm' } as const, null as Keepwarm | null)
 
 const NAMES: Record<string, string> = { seven_day: '7D', five_hour: '5H', spend_limit: 'SPEND' }
 const ORDER: Record<string, number> = { seven_day: 0, five_hour: 1 }
@@ -68,6 +69,22 @@ export const viewOf = (c: CacheFacts | null, now: number): CacheView | null => {
   }
 }
 
+/** The keepwarm line, or null where the cache-tax mod is not installed (no `$.cacheTax`) or not answering. */
+const peekKeepwarm = async ($: EngineInterface): Promise<void> => {
+  let next: Keepwarm | null = null
+  try {
+    const s = await $.cacheTax.status()
+    next = { state: s.keepwarm, leftMs: s.leftMs }
+  } catch {
+    // an absent or failing provider just means no keepwarm line
+  }
+  await update($, keepwarm, () => next)
+}
+
+/** The band's keepwarm text, e.g. `keepwarm 2h 10m left`. */
+export const keepwarmText = (k: Keepwarm): string =>
+  k.state === 'on' ? `keepwarm ${fmtIdle(k.leftMs)} left` : `keepwarm ${k.state}`
+
 const pull = async ($: EngineInterface): Promise<void> => {
   const u = await $.session.usage()
   await update($, windows, () => clean(u.rateLimits))
@@ -88,7 +105,11 @@ const measure = async ($: EngineInterface, lastAt: number | null, model: string 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await pull($)
-    $.clock.every(TICK_MS, () => $.ui.invalidate('ui.render'))
+    await peekKeepwarm($)
+    $.clock.every(TICK_MS, async () => {
+      await peekKeepwarm($)
+      $.ui.invalidate('ui.render')
+    })
     return next(e)
   })
 
@@ -137,6 +158,7 @@ export const register: Register = on => {
     // turn.step stamps the exact request time; when no step of this turn did, the turn's end is the floor.
     const lastAt = !c || now - c.lastAt > e.durationMs ? now : c.lastAt
     await measure($, lastAt, e.usage?.model ?? null)
+    await peekKeepwarm($)
     return r
   })
 
@@ -151,6 +173,7 @@ export const register: Register = on => {
     const list = await read($, windows)
     const now = await $.clock.now()
     const view = viewOf(await read($, cache), now)
+    const kw = await read($, keepwarm)
 
     if (list.length === 0 && !view) {
       return (
@@ -279,6 +302,7 @@ export const register: Register = on => {
               {summary}
             </Box>
           )}
+          {kw ? <Box key="kw" flexShrink={0} marginRight={2}><Text dimColor>{keepwarmText(kw)}</Text></Box> : null}
           {grow}
           {button}
         </Box>
@@ -301,6 +325,12 @@ export const register: Register = on => {
               ) : null}
             </Box>
           )}
+          {kw ? (
+            <Box key="kw" flexDirection="column" flexShrink={0} marginRight={2}>
+              <Text dimColor>keepwarm</Text>
+              <Text bold>{kw.state === 'on' ? `${fmtIdle(kw.leftMs)} left` : kw.state}</Text>
+            </Box>
+          ) : null}
           {grow}
           {button}
         </Box>
@@ -315,6 +345,7 @@ export const register: Register = on => {
         <Box key="cache" flexDirection="row" paddingX={1} alignItems="center">
           {badge}
           {summary}
+          {kw ? <Text dimColor>{` · ${keepwarmText(kw)}`}</Text> : null}
           {grow}
           {button}
         </Box>,
